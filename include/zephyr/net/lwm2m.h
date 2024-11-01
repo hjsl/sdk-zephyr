@@ -32,6 +32,9 @@
 #include <zephyr/sys/mutex.h>
 #include <zephyr/net/coap.h>
 #include <zephyr/net/lwm2m_path.h>
+#if defined(CONFIG_LWM2M_OSCORE_SUPPORT)
+#include <oscore.h>
+#endif
 
 /**
  * @name LwM2M Objects managed by OMA for LwM2M tech specification.
@@ -209,6 +212,9 @@ struct lwm2m_ctx {
 	int (*load_credentials)(struct lwm2m_ctx *client_ctx);
 	/** @} */
 #endif
+#if defined(CONFIG_LWM2M_OSCORE_SUPPORT)
+	struct context oscore_context;
+#endif
 	/** Custom socket options.
 	 * Client can override default socket options by providing
 	 * a callback that is called afer a socket is created and before
@@ -241,6 +247,9 @@ struct lwm2m_ctx {
 
 	/** Current index of Server Object used in this context. */
 	int srv_obj_inst;
+
+	/** Current index of OSCORE Object used in this context */
+	int oscore_obj_inst;
 
 	/** Flag to enable BOOTSTRAP interface. See Section "Bootstrap Interface"
 	 *  of LwM2M Technical Specification for more information.

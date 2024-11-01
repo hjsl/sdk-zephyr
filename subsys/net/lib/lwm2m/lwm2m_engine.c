@@ -105,6 +105,34 @@ static struct lwm2m_ctx *sock_ctx[MAX_POLL_FD];
 static int sock_nfds;
 static int control_sock;
 
+/* Setup OSCORE */
+const uint8_t MASTER_SECRET[16] = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+									0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
+									0x0d, 0x0e, 0x0f, 0x10 };
+const uint8_t SENDER_ID[1] = { 0x01 };
+const uint8_t RECIPIENT_ID[1] = { 0x00 };
+// const uint8_t MASTER_SALT[8] = { 0x9e, 0x7c, 0xa9, 0x22,
+//                                  0x23, 0x78, 0x63, 0x40 };
+// const uint8_t *ID_CONTEXT;
+// uint8_t ID_CONTEXT_LEN;
+
+struct oscore_init_params oscore_params;
+//  = {
+// 	.master_secret.ptr = (uint8_t *)MASTER_SECRET,
+// 	.master_secret.len = sizeof(MASTER_SECRET),
+// 	.sender_id.ptr = (uint8_t *)SENDER_ID,
+// 	.sender_id.len = sizeof(SENDER_ID),
+// 	.recipient_id.ptr = (uint8_t *)RECIPIENT_ID,
+// 	.recipient_id.len = sizeof(RECIPIENT_ID),
+// 	// .master_salt.ptr = (uint8_t *)MASTER_SALT,
+// 	// .master_salt.len = sizeof(MASTER_SALT),
+// 	// .id_context.ptr = (uint8_t *)ID_CONTEXT,
+// 	// .id_context.len = ID_CONTEXT_LEN,
+// 	.aead_alg = OSCORE_AES_CCM_16_64_128,
+// 	.hkdf = OSCORE_SHA_256,
+// 	.fresh_master_secret_salt = true,
+// };
+
 /* Resource wrappers */
 #if defined(CONFIG_LWM2M_COAP_BLOCK_TRANSFER)
 static struct coap_block_context output_block_contexts[NUM_OUTPUT_BLOCK_CONTEXT];
@@ -676,9 +704,12 @@ static void hint_socket_state(struct lwm2m_ctx *ctx, struct lwm2m_message *ongoi
 static int socket_recv_message(struct lwm2m_ctx *client_ctx)
 {
 	static uint8_t in_buf[NET_IPV6_MTU];
+	static uint8_t tmp_buf[2048] = { 0 };
+	uint32_t tmp_buf_len = 2048;
 	socklen_t from_addr_len;
 	ssize_t len;
 	static struct sockaddr from_addr;
+	int rc;
 
 	from_addr_len = sizeof(from_addr);
 	len = zsock_recvfrom(client_ctx->sock_fd, in_buf, sizeof(in_buf) - 1, ZSOCK_MSG_DONTWAIT,
@@ -701,8 +732,18 @@ static int socket_recv_message(struct lwm2m_ctx *client_ctx)
 		return 0;
 	}
 
-	in_buf[len] = 0U;
-	lwm2m_udp_receive(client_ctx, in_buf, len, &from_addr);
+	// in_buf[len] = 0U;
+
+	rc = oscore2coap(in_buf, len, tmp_buf, &tmp_buf_len, &client_ctx->oscore_context);
+	if (rc == 0) {
+		LOG_INF("Got an OSCORE packet");
+		// tmp_buf[tmp_buf_len] = 0;
+		lwm2m_udp_receive(client_ctx, tmp_buf, tmp_buf_len, &from_addr);
+	} else {
+		LOG_INF("Not an OSCORE packet, rc: %d", rc);
+		// tmp_buf[tmp_buf_len] = 0;
+		lwm2m_udp_receive(client_ctx, tmp_buf, tmp_buf_len, &from_addr);
+	}
 
 	return 0;
 }
@@ -712,6 +753,8 @@ static int socket_send_message(struct lwm2m_ctx *ctx)
 	int rc;
 	sys_snode_t *msg_node = sys_slist_get(&ctx->pending_sends);
 	struct lwm2m_message *msg;
+	uint8_t buf[2048];
+	uint32_t buflen = 2048;
 
 	if (!msg_node) {
 		return 0;
@@ -729,7 +772,14 @@ static int socket_send_message(struct lwm2m_ctx *ctx)
 
 	hint_socket_state(ctx, msg);
 
-	rc = zsock_send(msg->ctx->sock_fd, msg->cpkt.data, msg->cpkt.offset, 0);
+	rc = coap2oscore(msg->cpkt.data, msg->cpkt.offset, buf, &buflen, &ctx->oscore_context);
+	if (rc) {
+		LOG_ERR("Failed to convert COAP to OSCORE, err: %d", rc);
+		return rc;
+	}
+
+	// rc = zsock_send(msg->ctx->sock_fd, msg->cpkt.data, msg->cpkt.offset, 0);
+	rc = zsock_send(msg->ctx->sock_fd, buf, buflen, 0);
 
 	if (rc < 0) {
 		LOG_ERR("Failed to send packet, err %d", errno);
@@ -1027,6 +1077,85 @@ static const int cipher_list_cert[] = {
 
 #endif /* CONFIG_LWM2M_DTLS_SUPPORT */
 
+#if defined(CONFIG_LWM2M_OSCORE_SUPPORT)
+static int lwm2m_load_oscore_credentials(struct lwm2m_ctx *ctx)
+{
+	int ret = 0;
+	void *master_secret = NULL;
+	uint16_t master_secret_len;
+	void *sender_id = NULL;
+	uint16_t sender_id_len;
+	void *recipient_id = NULL;
+	uint16_t recipient_id_len;
+
+	/* Master secret */
+	ret = lwm2m_get_res_buf(&LWM2M_OBJ(21, ctx->oscore_obj_inst, 0), 
+				&master_secret, NULL,
+				&master_secret_len, NULL);
+	if (ret < 0) {
+		LOG_ERR("Unable to get resource data for %d/%d/%d", 21,  ctx->oscore_obj_inst, 0);
+		return ret;
+	}
+
+	if (master_secret_len == 0) {
+		LOG_ERR("Master secret is empty");
+		return -EINVAL;
+	}
+
+	/* Sender ID */
+	ret = lwm2m_get_res_buf(&LWM2M_OBJ(21, ctx->oscore_obj_inst, 1), 
+				&sender_id, NULL,
+				&sender_id_len, NULL);
+	if (ret < 0) {
+		LOG_ERR("Unable to get resource data for %d/%d/%d", 21,  ctx->oscore_obj_inst, 0);
+		return ret;
+	}
+
+	if (sender_id_len == 0) {
+		LOG_ERR("Sender ID is empty");
+		return -EINVAL;
+	}
+
+	/* Recipient ID */
+	ret = lwm2m_get_res_buf(&LWM2M_OBJ(21, ctx->oscore_obj_inst, 2), 
+				&recipient_id, NULL,
+				&recipient_id_len, NULL);
+	if (ret < 0) {
+		LOG_ERR("Unable to get resource data for %d/%d/%d", 21,  ctx->oscore_obj_inst, 0);
+		return ret;
+	}
+
+	if (recipient_id_len == 0) {
+		LOG_ERR("Recipient ID is empty");
+		return -EINVAL;
+	}
+
+LOG_HEXDUMP_WRN(master_secret, master_secret_len, "master secret:");
+LOG_HEXDUMP_WRN(sender_id, sender_id_len, "sender ID:");
+LOG_HEXDUMP_WRN(recipient_id, recipient_id_len, "recipient ID:");
+
+	struct oscore_init_params init_params = {
+		.master_secret.ptr = (uint8_t *)master_secret,
+		.master_secret.len = master_secret_len,
+		.sender_id.ptr = (uint8_t *)sender_id,
+		.sender_id.len = sender_id_len,
+		.recipient_id.ptr = (uint8_t *)recipient_id,
+		.recipient_id.len = recipient_id_len,
+		.aead_alg = OSCORE_AES_CCM_16_64_128,
+		.hkdf = OSCORE_SHA_256,
+		.fresh_master_secret_salt = true,
+	};
+
+	ret = oscore_context_init(&init_params, &ctx->oscore_context);
+	if (ret) {
+		LOG_ERR("Failed to init OSCORE, err: %d", ret);
+		return ret;
+	}
+
+	return 0;
+}
+#endif /* CONFIG_LWM2M_OSCORE_SUPPORT */
+
 int lwm2m_set_default_sockopt(struct lwm2m_ctx *ctx)
 {
 #if defined(CONFIG_LWM2M_DTLS_SUPPORT)
@@ -1153,6 +1282,13 @@ int lwm2m_socket_start(struct lwm2m_ctx *client_ctx)
 		}
 	}
 #endif /* CONFIG_LWM2M_DTLS_SUPPORT */
+
+#if defined(CONFIG_LWM2M_OSCORE_SUPPORT)
+	ret = lwm2m_load_oscore_credentials(client_ctx);
+	if (ret < 0) {
+		return ret;
+	}
+#endif /* CONFIG_LWM2M_OSCORE_SUPPORT */
 
 	if (client_ctx->sock_fd < 0) {
 		ret = lwm2m_open_socket(client_ctx);

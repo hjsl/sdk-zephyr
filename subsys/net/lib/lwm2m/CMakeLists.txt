@@ -41,6 +41,9 @@ zephyr_library_sources_ifdef(CONFIG_LWM2M_LOCATION_OBJ_SUPPORT
 zephyr_library_sources_ifdef(CONFIG_LWM2M_GATEWAY_OBJ_SUPPORT
     lwm2m_obj_gateway.c
     )
+zephyr_library_sources_ifdef(CONFIG_LWM2M_OSCORE_OBJ_SUPPORT
+    lwm2m_obj_oscore.c
+    )
 zephyr_library_sources_ifdef(CONFIG_LWM2M_PORTFOLIO_OBJ_SUPPORT
     lwm2m_obj_portfolio.c
     )

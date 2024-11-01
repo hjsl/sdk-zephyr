@@ -72,7 +72,14 @@ menu "Engine features"
 config LWM2M_DTLS_SUPPORT
 	bool "DTLS support in the LwM2M client"
 
-
+config LWM2M_OSCORE_SUPPORT
+	bool "OSCORE support in the LwM2M client"
+	select ZCBOR
+	select ZCBOR_CANONICAL
+	select UOSCORE
+	select LWM2M_OSCORE_OBJ_SUPPORT
+	select EXPERIMENTAL
+	
 config LWM2M_DNS_SUPPORT
 	bool "DNS support in the LwM2M client"
 	default y if DNS_RESOLVER
@@ -254,6 +261,23 @@ endchoice
 endif # LWM2M_RESOURCE_DATA_CACHE_SUPPORT
 
 endmenu # "Engine features"
+
+if LWM2M_OSCORE_SUPPORT
+	
+config LWM2M_OSCORE_MASTER_SECRET
+	string "OSCORE master secret"
+	default "0102030405060708090a0b0c0d0e0f10"
+
+
+config LWM2M_OSCORE_SENDER_ID
+	string "OSCORE sender ID"
+	default "00"
+
+config LWM2M_OSCORE_RECIPIENT_ID
+	string "OSCORE recipient ID"
+	default "01"
+
+endif
 
 menu "Memory and buffer size configuration"
 
@@ -711,6 +735,41 @@ config LWM2M_GATEWAY_IOT_DEVICE_OBJECTS_MAX_STR_SIZE
 	default 128
 
 endif # LWM2M_GATEWAY_OBJ_SUPPORT
+
+config LWM2M_OSCORE_OBJ_SUPPORT
+	bool "LwM2M OSCORE Object (ID 21) [EXPERIMENTAL]"
+	select EXPERIMENTAL
+
+if LWM2M_OSCORE_OBJ_SUPPORT
+
+config LWM2M_OSCORE_OBJ_INSTANCE_COUNT
+        int "Maximum # of LwM2M OSCORE object instances"
+        default 1
+        help
+          This setting establishes the total count of LwM2M OSCORE object
+	  instances available to the client.
+
+config LWM2M_OSCORE_OBJ_MASTER_SECRET_SIZE
+	int "Maximum size of the OSCORE master secret"
+	default 16
+
+config LWM2M_OSCORE_OBJ_SENDER_ID_SIZE
+	int "Maximum size of the OSCORE sender ID"
+	default 16
+
+config LWM2M_OSCORE_OBJ_RECIPIENT_ID_SIZE
+	int "Maximum size of the OSCORE recipient ID"
+	default 16
+
+config LWM2M_OSCORE_OBJ_MASTER_SALT_SIZE
+	int "Maximum size of the OSCORE master salt"
+	default 16
+
+config LWM2M_OSCORE_OBJ_ID_CONTEXT_SIZE
+	int "Maximum size of the OSCORE master salt"
+	default 16
+
+endif # LWM2M_OSCORE_OBJ_SUPPORT
 
 source "subsys/net/lib/lwm2m/Kconfig.ipso"
 
